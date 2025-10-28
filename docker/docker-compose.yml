@@ -1,0 +1,82 @@
+# dica: pode remover a linha "version:" (obsoleta)
+
+services:
+  # --- SQL SERVER ---
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: sqlserver
+    environment:
+      - ACCEPT_EULA=Y
+      - SA_PASSWORD=Your_strong_password123!
+    ports:
+      - "1433:1433"
+    volumes:
+      - mssql-data:/var/opt/mssql
+      - ./sqlserver-init:/docker-entrypoint-initdb.d
+    healthcheck:
+      # caminho correto do sqlcmd na imagem 2022+
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'Your_strong_password123!' -Q 'SELECT 1' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  # --- MONGO ---
+  mongo:
+    image: mongo:7
+    container_name: mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+      - ./mongo-init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  # --- REDIS ---
+  redis:
+    image: redis:7
+    container_name: redis
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  # --- S2 (FastAPI) ---
+  s2:
+    build:
+      context: ../s2
+      # se seu arquivo se chamar "Dockerfile.docker", descomente a linha abaixo:
+      # dockerfile: Dockerfile.docker
+    container_name: s2
+    environment:
+      MSSQL_HOST: sqlserver
+      MSSQL_USER: sa
+      MSSQL_PASSWORD: Your_strong_password123!   # mesma senha do SQL
+      MSSQL_DB: marketdb
+      MONGO_URL: mongodb://mongo:27017
+      MONGO_DB: marketdb
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+    depends_on:
+      sqlserver:
+        condition: service_started
+      mongo:
+        condition: service_started
+      redis:
+        condition: service_started
+    ports:
+      - "8000:8000"
+
+volumes:
+  mssql-data:
+  mongo-data:
+  redis-data:
