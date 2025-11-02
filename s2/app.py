@@ -25,7 +25,7 @@ REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 
 
 # =========================================================
-# FUNÇÕES DE CONEXÃO (LAZY)
+# FUNÇÕES DE CONEXÃO
 # =========================================================
 def get_sql_conn():
     try:
@@ -44,7 +44,7 @@ def get_mongo_collection():
         client = pymongo.MongoClient(MONGO_URL)
         db = client[MONGO_DB]
         col = db["games"]
-        # garante índice
+        # garante índice de SKU
         existing = col.index_information()
         if "sku_1" not in existing:
             col.create_index([("sku", 1)], unique=True)
@@ -56,8 +56,7 @@ def get_mongo_collection():
 def get_redis():
     try:
         r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
-        # testa
-        r.ping()
+        r.ping()  # teste rápido de conexão
         return r
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao conectar no Redis: {e}")
@@ -100,28 +99,25 @@ class ItemCarrinhoIn(BaseModel):
 @app.get("/health")
 def health():
     """
-    Pra testar se os 3 bancos estão vivos.
+    Verifica se todos os bancos estão acessíveis.
     """
-    # SQL
     try:
         conn = get_sql_conn()
         conn.close()
-    except HTTPException as e:
-        return {"status": "degraded", "sql": e.detail}
+    except Exception as e:
+        return {"status": "degraded", "sql": str(e)}
 
-    # Mongo
     try:
         col = get_mongo_collection()
         col.estimated_document_count()
-    except HTTPException as e:
-        return {"status": "degraded", "mongo": e.detail}
+    except Exception as e:
+        return {"status": "degraded", "mongo": str(e)}
 
-    # Redis
     try:
         r = get_redis()
         r.ping()
-    except HTTPException as e:
-        return {"status": "degraded", "redis": e.detail}
+    except Exception as e:
+        return {"status": "degraded", "redis": str(e)}
 
     return {"status": "ok"}
 
@@ -138,10 +134,10 @@ def criar_cliente(cliente: ClienteIn):
         cur.execute("""
             INSERT INTO Clientes
                 (Nome, Email, Telefone, CPF, DataNascimento,
-                 Rua, Cidade, Estado, CEP, PlataformaFavorita, CriadoEm)
+                 Rua, Cidade, Estado, CEP, PlataformaFavorita)
             VALUES
                 (%s, %s, %s, %s, %s,
-                 %s, %s, %s, %s, %s, SYSDATETIME())
+                 %s, %s, %s, %s, %s)
         """, (
             cliente.Nome,
             cliente.Email,
@@ -162,7 +158,7 @@ def criar_cliente(cliente: ClienteIn):
     finally:
         conn.close()
 
-    return {"message": "cliente criado"}
+    return {"message": "cliente criado com sucesso"}
 
 
 @app.get("/clientes")
@@ -190,15 +186,14 @@ def criar_jogo(jogo: JogoIn):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao criar jogo: {e}")
 
-    # o Mongo colocou _id dentro de doc -> tira pra poder serializar
+    # remove _id antes de retornar
     doc.pop("_id", None)
 
     return {
-        "message": "jogo criado",
+        "message": "jogo criado com sucesso",
         "jogo": doc,
         "id_mongo": str(result.inserted_id),
     }
-
 
 
 @app.get("/jogos")
@@ -215,6 +210,7 @@ def listar_jogos():
 def adicionar_item_carrinho(id_cliente: int, item: ItemCarrinhoIn):
     col = get_mongo_collection()
     jogo = col.find_one({"sku": item.sku}, {"_id": 0})
+
     if not jogo:
         raise HTTPException(status_code=404, detail="Jogo não encontrado")
 
@@ -229,6 +225,7 @@ def adicionar_item_carrinho(id_cliente: int, item: ItemCarrinhoIn):
         "adicionado_em": datetime.utcnow().isoformat()
     }
 
+    # salva no Redis
     r.hset(key, item.sku, json.dumps(item_data))
 
     raw = r.hgetall(key)
