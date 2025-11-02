@@ -76,6 +76,22 @@ services:
     ports:
       - "8000:8000"
 
+  # --- S1 (cliente/orquestrador) ---
+  s1:
+    build:
+      context: ../s1
+      # se o nome do Dockerfile for diferente, põe aqui
+      # dockerfile: Dockerfile
+    container_name: s1
+    environment:
+      # S1 vai chamar o S2 pelo nome do serviço dentro da rede do docker
+      S2_BASE_URL: http://s2:8000
+    depends_on:
+      s2:
+        condition: service_started
+    ports:
+      - "8001:8001"
+
 volumes:
   mssql-data:
   mongo-data:
