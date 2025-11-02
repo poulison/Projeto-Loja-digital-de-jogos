@@ -1,155 +1,246 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
-import os, pymongo, redis, pymssql
+import os
+import pymssql
+import pymongo
+import redis
+from datetime import datetime
+import json
 
-# ---------- Config ----------
-MSSQL_HOST = os.getenv("MSSQL_HOST", "sqlserver")
-MSSQL_USER = os.getenv("MSSQL_USER", "sa")
-MSSQL_PASS = os.getenv("MSSQL_PASSWORD", "Aa123456!")
-MSSQL_DB   = os.getenv("MSSQL_DB", "marketdb")
+app = FastAPI(title="S2 - Loja de Jogos", version="1.0.0")
 
-MONGO_URL  = os.getenv("MONGO_URL", "mongodb://mongo:27017")
-MONGO_DB   = os.getenv("MONGO_DB", "marketdb")
+# =========================================================
+# CONFIGURAÇÕES / VARIÁVEIS DE AMBIENTE
+# =========================================================
+SQL_HOST = os.getenv("SQL_HOST", "sqlserver")
+SQL_USER = os.getenv("SQL_USER", "sa")
+SQL_PASSWORD = os.getenv("SQL_PASSWORD", "Your_strong_password123!")
+SQL_DB = os.getenv("SQL_DB", "marketdb")
+
+MONGO_URL = os.getenv("MONGO_URL", "mongodb://mongo:27017")
+MONGO_DB = os.getenv("MONGO_DB", "marketdb")
 
 REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 
-# ---------- Conexões ----------
-def mssql_conn():
-    return pymssql.connect(server=MSSQL_HOST, user=MSSQL_USER, password=MSSQL_PASS,
-                           database=MSSQL_DB, as_dict=True)
 
-mongo = pymongo.MongoClient(MONGO_URL)
-mdb = mongo[MONGO_DB]
-games = mdb["games"]
-
-r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
-
-# ---------- FastAPI ----------
-app = FastAPI(title="S2 - Loja de Jogos (SQL + Mongo + Redis)")
-
-@app.get("/health")
-def health():
+# =========================================================
+# FUNÇÕES DE CONEXÃO (LAZY)
+# =========================================================
+def get_sql_conn():
     try:
-        with mssql_conn() as c: pass
-        mongo.admin.command("ping")
-        r.ping()
-        return {"ok": True}
+        return pymssql.connect(
+            server=SQL_HOST,
+            user=SQL_USER,
+            password=SQL_PASSWORD,
+            database=SQL_DB,
+        )
     except Exception as e:
-        raise HTTPException(500, f"health error: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro ao conectar no SQL Server: {e}")
 
-# ---------- Models ----------
+
+def get_mongo_collection():
+    try:
+        client = pymongo.MongoClient(MONGO_URL)
+        db = client[MONGO_DB]
+        col = db["games"]
+        # garante índice
+        existing = col.index_information()
+        if "sku_1" not in existing:
+            col.create_index([("sku", 1)], unique=True)
+        return col
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao conectar no MongoDB: {e}")
+
+
+def get_redis():
+    try:
+        r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
+        # testa
+        r.ping()
+        return r
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao conectar no Redis: {e}")
+
+
+# =========================================================
+# MODELOS
+# =========================================================
 class ClienteIn(BaseModel):
     Nome: str
     Email: str
     Telefone: str | None = None
-    CPF: str | None = None
-    DataNascimento: str | None = None  # YYYY-MM-DD
+    CPF: str
+    DataNascimento: str | None = None  # yyyy-mm-dd
     Rua: str | None = None
     Cidade: str | None = None
     Estado: str | None = None
     CEP: str | None = None
     PlataformaFavorita: str | None = None
 
+
 class JogoIn(BaseModel):
     sku: str
-    titulo: str | None = None
-    plataforma: str | None = None
-    genero: str | None = None
-    preco: float | None = None
-    estoque: int | None = None
+    titulo: str
+    plataforma: str
+    genero: str
+    preco: float
+    estoque: int = 0
     classificacao_indicativa: int | None = Field(default=None, ge=0)
 
-class CartItem(BaseModel):
-    sku: str
-    qty: int = Field(..., ge=1)
 
-# ---------- Clientes (SQL Server) ----------
+class ItemCarrinhoIn(BaseModel):
+    sku: str
+    qty: int = Field(gt=0)
+
+
+# =========================================================
+# HEALTHCHECK
+# =========================================================
+@app.get("/health")
+def health():
+    """
+    Pra testar se os 3 bancos estão vivos.
+    """
+    # SQL
+    try:
+        conn = get_sql_conn()
+        conn.close()
+    except HTTPException as e:
+        return {"status": "degraded", "sql": e.detail}
+
+    # Mongo
+    try:
+        col = get_mongo_collection()
+        col.estimated_document_count()
+    except HTTPException as e:
+        return {"status": "degraded", "mongo": e.detail}
+
+    # Redis
+    try:
+        r = get_redis()
+        r.ping()
+    except HTTPException as e:
+        return {"status": "degraded", "redis": e.detail}
+
+    return {"status": "ok"}
+
+
+# =========================================================
+# ENDPOINTS - CLIENTES (SQL)
+# =========================================================
+@app.post("/clientes")
+def criar_cliente(cliente: ClienteIn):
+    conn = get_sql_conn()
+    cur = conn.cursor(as_dict=True)
+
+    try:
+        cur.execute("""
+            INSERT INTO Clientes
+                (Nome, Email, Telefone, CPF, DataNascimento,
+                 Rua, Cidade, Estado, CEP, PlataformaFavorita, CriadoEm)
+            VALUES
+                (%s, %s, %s, %s, %s,
+                 %s, %s, %s, %s, %s, SYSDATETIME())
+        """, (
+            cliente.Nome,
+            cliente.Email,
+            cliente.Telefone,
+            cliente.CPF,
+            cliente.DataNascimento,
+            cliente.Rua,
+            cliente.Cidade,
+            cliente.Estado,
+            cliente.CEP,
+            cliente.PlataformaFavorita,
+        ))
+        conn.commit()
+    except pymssql.IntegrityError:
+        raise HTTPException(status_code=409, detail="Já existe cliente com esse CPF")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao criar cliente: {e}")
+    finally:
+        conn.close()
+
+    return {"message": "cliente criado"}
+
+
 @app.get("/clientes")
 def listar_clientes():
-    with mssql_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT * FROM dbo.Clientes ORDER BY IdCliente")
-            return list(cur.fetchall())
+    conn = get_sql_conn()
+    cur = conn.cursor(as_dict=True)
+    cur.execute("SELECT TOP 100 * FROM Clientes ORDER BY IdCliente DESC;")
+    rows = cur.fetchall()
+    conn.close()
+    return rows
 
-@app.post("/clientes")
-def criar_cliente(c: ClienteIn):
-    with mssql_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO dbo.Clientes
-                (Nome, Email, Telefone, CPF, DataNascimento, Rua, Cidade, Estado, CEP, PlataformaFavorita)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-            """, (c.Nome, c.Email, c.Telefone, c.CPF, c.DataNascimento,
-                  c.Rua, c.Cidade, c.Estado, c.CEP, c.PlataformaFavorita))
-            conn.commit()
-            cur.execute("SELECT TOP 1 * FROM dbo.Clientes WHERE Email=%s", (c.Email,))
-            return cur.fetchone()
 
-# ---------- Jogos (Mongo) ----------
-def _normalize_game(doc: dict) -> dict:
-    # aceita tanto campos pt (titulo, plataforma...) quanto en (title, platform...)
-    if "title" in doc and "titulo" not in doc:
-        doc["titulo"] = doc.pop("title")
-    if "platform" in doc and "plataforma" not in doc:
-        doc["plataforma"] = doc.pop("platform")
-    if "genre" in doc and "genero" not in doc:
-        doc["genero"] = doc.pop("genre")
-    if "_id" in doc:
-        doc["_id"] = str(doc["_id"])
-    return doc
+# =========================================================
+# ENDPOINTS - JOGOS (MONGO)
+# =========================================================
+@app.post("/jogos")
+def criar_jogo(jogo: JogoIn):
+    col = get_mongo_collection()
+    doc = jogo.model_dump()
+
+    try:
+        result = col.insert_one(doc)
+    except pymongo.errors.DuplicateKeyError:
+        raise HTTPException(status_code=409, detail="Já existe jogo com esse SKU")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao criar jogo: {e}")
+
+    # o Mongo colocou _id dentro de doc -> tira pra poder serializar
+    doc.pop("_id", None)
+
+    return {
+        "message": "jogo criado",
+        "jogo": doc,
+        "id_mongo": str(result.inserted_id),
+    }
+
+
 
 @app.get("/jogos")
 def listar_jogos():
-    return [_normalize_game(x) for x in games.find({}).sort("sku")]
+    col = get_mongo_collection()
+    jogos = list(col.find({}, {"_id": 0}))
+    return jogos
 
-@app.post("/jogos")
-def criar_jogo(j: JogoIn):
-    # cria índices na primeira vez (idempotente)
-    games.create_index([("sku", 1)], unique=True)
-    games.create_index([("plataforma", 1), ("genero", 1)])
-    games.create_index([("titulo", "text")])
-    try:
-        res = games.insert_one({k: v for k, v in j.dict().items() if v is not None})
-        return {"inserted_id": str(res.inserted_id)}
-    except pymongo.errors.DuplicateKeyError:
-        raise HTTPException(409, "SKU já existente")
 
-@app.get("/jogos/busca")
-def buscar_jogos(q: str | None = None, plataforma: str | None = None, genero: str | None = None):
-    filtro = {}
-    if q: filtro["$text"] = {"$search": q}
-    if plataforma: filtro["plataforma"] = plataforma
-    if genero: filtro["genero"] = genero
-    return [_normalize_game(x) for x in games.find(filtro).limit(50)]
-
-# ---------- Carrinho (Redis) ----------
-def _cart_key(cid: int) -> str:
-    return f"cart:{cid}"
-
+# =========================================================
+# ENDPOINTS - CARRINHO (REDIS)
+# =========================================================
 @app.post("/carrinho/{id_cliente}/itens")
-def adicionar_item(id_cliente: int, item: CartItem):
-    # incrementa quantidade do sku no hash
-    r.hincrby(_cart_key(id_cliente), item.sku, item.qty)
-    return {"ok": True, "items": r.hgetall(_cart_key(id_cliente))}
+def adicionar_item_carrinho(id_cliente: int, item: ItemCarrinhoIn):
+    col = get_mongo_collection()
+    jogo = col.find_one({"sku": item.sku}, {"_id": 0})
+    if not jogo:
+        raise HTTPException(status_code=404, detail="Jogo não encontrado")
+
+    r = get_redis()
+    key = f"carrinho:{id_cliente}"
+
+    item_data = {
+        "sku": item.sku,
+        "titulo": jogo.get("titulo"),
+        "preco": jogo.get("preco"),
+        "quantidade": item.qty,
+        "adicionado_em": datetime.utcnow().isoformat()
+    }
+
+    r.hset(key, item.sku, json.dumps(item_data))
+
+    raw = r.hgetall(key)
+    carrinho = {sku: json.loads(v) for sku, v in raw.items()}
+
+    return {"id_cliente": id_cliente, "carrinho": carrinho}
+
 
 @app.get("/carrinho/{id_cliente}")
-def listar_carrinho(id_cliente: int):
-    raw = r.hgetall(_cart_key(id_cliente))  # {sku: qty}
-    # enriquece com dados do Mongo
-    items = []
-    for sku, qty in raw.items():
-        prod = games.find_one({"sku": sku}) or {}
-        prod = _normalize_game(prod)
-        items.append({"sku": sku, "qty": int(qty), "jogo": prod})
-    return {"cliente": id_cliente, "itens": items}
-
-@app.delete("/carrinho/{id_cliente}/itens/{sku}")
-def remover_item(id_cliente: int, sku: str):
-    r.hdel(_cart_key(id_cliente), sku)
-    return {"ok": True, "items": r.hgetall(_cart_key(id_cliente))}
-
-@app.delete("/carrinho/{id_cliente}")
-def esvaziar_carrinho(id_cliente: int):
-    r.delete(_cart_key(id_cliente))
-    return {"ok": True}
+def obter_carrinho(id_cliente: int):
+    r = get_redis()
+    key = f"carrinho:{id_cliente}"
+    raw = r.hgetall(key)
+    carrinho = {sku: json.loads(v) for sku, v in raw.items()}
+    return {"id_cliente": id_cliente, "carrinho": carrinho}
