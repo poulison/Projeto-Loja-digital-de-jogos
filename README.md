@@ -69,7 +69,7 @@ Dessa forma, o S2 combina informações do catálogo e do cadastro de clientes, 
     | Serviço     | Porta padrão | Descrição                            |
     | ----------- | ------------ | ------------------------------------ |
     | `s1`        | `8000`       | Faz a requisição de processos        |
-    | `s2`        | `8001`       | API de integração (clientes + jogos) |
+    | `s2`        | `8001`       | API de integração                    |
     | `mongo`     | `27017`      | Banco de jogos                       |
     | `sqlserver` | `1433`       | Banco de clientes                    |
     | `redis`     | `6379`       | Cache                                |
