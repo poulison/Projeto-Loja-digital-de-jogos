@@ -35,7 +35,7 @@ MongoDB → Consulta o catálogo de jogos disponível. Usamos principalmente por
 
 Redis → Funciona como cache de consultas, atuando no carrinho dos clientes. O escolhemos por conta de ser ótimo com dados temporários
 
-Dessa forma, o S2 combina informações do catálogo e do cadastro de clientes, realizando a interação entre os 3 bancos de dados, oferecendo endpoints otimizados para operações compostas, como histórico de compras ou recomendações personalizadas.
+Dessa forma, o S2 combina informações do catálogo e do cadastro de clientes, realizando a interação entre os 3 bancos de dados.
 
 ## Como executar:
 
