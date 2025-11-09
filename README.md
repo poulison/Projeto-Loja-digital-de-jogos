@@ -5,7 +5,7 @@
 -  Victor Merker Binda RA: 22.125.075-6
 
 ## Tema do projeto:
-  O projeto Loja Digital de Jogos tem como objetivo simular o funcionamento de uma plataforma de venda de jogos online, permitindo o gerenciamento de catálogo de jogos, cadastro de clientes e integração de dados entre diferentes fontes.
+  O projeto Loja Digital de Jogos tem como objetivo simular o funcionamento de uma plataforma de venda de jogos online, permitindo o gerenciamento de catálogo de jogos, cadastro de clientes e integração de dados entre diferentes fontes. Escolhemos esse tema por termos familiariedade com o projeto do semestre passado além de gostarmos dele
 
 
 ## ⚙️ Descrição dos Serviços
